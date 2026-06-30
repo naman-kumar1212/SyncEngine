@@ -2,6 +2,8 @@ import React, { useRef, useState } from 'react';
 import { useCollaborativeDoc } from '../hooks/useCollaborativeDoc';
 import { PresenceOverlay } from './PresenceOverlay';
 import { RevisionHistory } from './RevisionHistory';
+import { RichTextEditor } from './RichTextEditor';
+import { ShareModal } from './ShareModal';
 
 interface EditorProps {
   docId: string;
@@ -20,37 +22,12 @@ export const Editor: React.FC<EditorProps> = ({ docId, accessToken, title, owner
     localDelete,
     localBatchEdit,
     sendCursor,
+    uidToIndex,
   } = useCollaborativeDoc(docId, accessToken);
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [tagName, setTagName] = useState('');
   const [tagSaving, setTagSaving] = useState(false);
-
-  // Sync cursor selection to peers
-  const handleSelect = () => {
-    if (!textareaRef.current) return;
-    const start = textareaRef.current.selectionStart;
-    sendCursor(start);
-  };
-
-  // Basic single-char insert/delete change handler
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const nextText = e.target.value;
-    const prevText = text;
-
-    if (nextText.length > prevText.length) {
-      const start = textareaRef.current?.selectionStart ?? nextText.length;
-      const idx = start - 1;
-      const char = nextText[idx];
-      localInsert(idx, char);
-    } else if (nextText.length < prevText.length) {
-      const start = textareaRef.current?.selectionStart ?? nextText.length;
-      const idx = start;
-      localDelete(idx);
-    } else {
-      localBatchEdit(prevText, nextText);
-    }
-  };
+  const [showShareModal, setShowShareModal] = useState(false);
 
   // Saves a named checkpoint/revision tag
   const handleSaveTag = async (e: React.FormEvent) => {
@@ -103,8 +80,25 @@ export const Editor: React.FC<EditorProps> = ({ docId, accessToken, title, owner
             {status}
           </span>
         </div>
-        <PresenceOverlay presence={presence} sessionId={sessionId} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
+          <PresenceOverlay presence={presence} sessionId={sessionId} />
+          <button 
+            onClick={() => setShowShareModal(true)}
+            className="glow-btn"
+            style={{ padding: '8px 16px', fontSize: 12 }}
+          >
+            Share
+          </button>
+        </div>
       </div>
+
+      {showShareModal && (
+        <ShareModal 
+          docId={docId} 
+          accessToken={accessToken} 
+          onClose={() => setShowShareModal(false)} 
+        />
+      )}
 
       {/* Main Workspace Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, flex: 1 }}>
@@ -126,26 +120,12 @@ export const Editor: React.FC<EditorProps> = ({ docId, accessToken, title, owner
             <span>Collaborative Buffer</span>
             <span style={{ fontFamily: 'var(--font-mono)' }}>{text.length} chars</span>
           </div>
-          <textarea
-            ref={textareaRef}
-            value={text}
-            onChange={handleChange}
-            onSelect={handleSelect}
-            onKeyUp={handleSelect}
-            style={{
-              flex: 1,
-              width: '100%',
-              padding: 24,
-              backgroundColor: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: 'var(--text-primary)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 15,
-              lineHeight: 1.6,
-              resize: 'none',
-            }}
-            placeholder="Start typing your collaborative masterpiece here..."
+          <RichTextEditor
+            text={text}
+            onChange={localBatchEdit}
+            onSelect={sendCursor}
+            presence={presence}
+            uidToIndex={uidToIndex}
           />
         </div>
 

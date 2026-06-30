@@ -16,7 +16,7 @@ import { logger } from '../logger';
 export interface ClientSession {
   readonly id: string;          // Session UUID (server-generated)
   readonly userId: string;
-  readonly docId: string;
+  readonly docId?: string;
   readonly siteId: string;      // UUID used by this client for RGA UID generation
   readonly displayName: string;
   readonly color: string;
@@ -32,6 +32,8 @@ export interface ClientSession {
 const sessions: Map<string, ClientSession> = new Map();
 // docId → Set of session IDs for fast broadcast lookup
 const docSessions: Map<string, Set<string>> = new Map();
+// userId → Set of session IDs for user-targeted messages (e.g. notifications)
+const userSessions: Map<string, Set<string>> = new Map();
 
 /**
  * Registers a new session when a client successfully JOINs.
@@ -40,7 +42,7 @@ export function registerSession(
   socket: WebSocket,
   params: {
     userId: string;
-    docId: string;
+    docId?: string;
     siteId: string;
     displayName: string;
     color: string;
@@ -59,12 +61,19 @@ export function registerSession(
 
   sessions.set(session.id, session);
 
-  if (!docSessions.has(params.docId)) {
-    docSessions.set(params.docId, new Set());
+  if (session.docId) {
+    if (!docSessions.has(session.docId)) {
+      docSessions.set(session.docId, new Set());
+    }
+    docSessions.get(session.docId)!.add(session.id);
   }
-  docSessions.get(params.docId)!.add(session.id);
 
-  logger.info({ sessionId: session.id, userId: params.userId, docId: params.docId }, 'Session registered');
+  if (!userSessions.has(session.userId)) {
+    userSessions.set(session.userId, new Set());
+  }
+  userSessions.get(session.userId)!.add(session.id);
+
+  logger.info({ sessionId: session.id, userId: session.userId, docId: session.docId }, 'Session registered');
   return session;
 }
 
@@ -73,15 +82,20 @@ export function registerSession(
  */
 export function removeSession(sessionId: string): ClientSession | undefined {
   const session = sessions.get(sessionId);
-  if (!session) return undefined;
-
-  sessions.delete(sessionId);
-  docSessions.get(session.docId)?.delete(sessionId);
-  if (docSessions.get(session.docId)?.size === 0) {
-    docSessions.delete(session.docId);
+  if (session) {
+    sessions.delete(sessionId);
+    if (session.docId) {
+      docSessions.get(session.docId)?.delete(sessionId);
+      if (docSessions.get(session.docId)?.size === 0) {
+        docSessions.delete(session.docId);
+      }
+    }
+    userSessions.get(session.userId)?.delete(sessionId);
+    if (userSessions.get(session.userId)?.size === 0) {
+      userSessions.delete(session.userId);
+    }
+    logger.info({ sessionId, userId: session.userId, docId: session.docId }, 'Session removed');
   }
-
-  logger.info({ sessionId, userId: session.userId, docId: session.docId }, 'Session removed');
   return session;
 }
 
@@ -144,6 +158,27 @@ export function broadcastToDocument(
   const docSessionList = getDocumentSessions(docId);
   for (const session of docSessionList) {
     if (session.id === excludeSessionId) continue;
+    sendToSession(session, data);
+  }
+}
+
+/**
+ * Returns all sessions for a specific user on THIS worker.
+ */
+export function getSessionsForUser(userId: string): ClientSession[] {
+  const ids = userSessions.get(userId);
+  if (!ids) return [];
+  return [...ids]
+    .map((id) => sessions.get(id))
+    .filter((s): s is ClientSession => s !== undefined);
+}
+
+/**
+ * Broadcasts a message to all active sessions for a specific user.
+ */
+export function broadcastToUser(userId: string, data: unknown): void {
+  const sessionsList = getSessionsForUser(userId);
+  for (const session of sessionsList) {
     sendToSession(session, data);
   }
 }

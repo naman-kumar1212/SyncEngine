@@ -18,7 +18,7 @@ import type { UserPresence, PresenceUpdate } from './presence';
  */
 export interface JoinMessage {
   readonly type: 'JOIN';
-  readonly docId: string;
+  readonly docId?: string;      // Optional for global notification connection
   readonly token: string;       // JWT access token
   readonly lastSeq: number;     // 0 = fresh; >0 = reconnect, request missed ops
   readonly clientId: string;    // Stable client UUID (persisted in localStorage)
@@ -45,12 +45,27 @@ export interface PresenceMessage {
   readonly update: PresenceUpdate;
 }
 
+export interface PresenceCursorMessage {
+  readonly type: 'PRESENCE_CURSOR';
+  readonly docId: string;
+  readonly update: {
+    readonly sessionId: string;
+    readonly cursor: any; // Using any for brevity here, should be CursorPosition
+  };
+}
+
+export interface PresenceTypingMessage {
+  readonly type: 'PRESENCE_TYPING';
+  readonly docId: string;
+  readonly isTyping: boolean;
+}
+
 export interface PingMessage {
   readonly type: 'PING';
   readonly timestamp: number;   // Unix ms — echoed back in PONG for RTT measurement
 }
 
-export type ClientMessage = JoinMessage | OperationMessage | PresenceMessage | PingMessage;
+export type ClientMessage = JoinMessage | OperationMessage | PresenceMessage | PresenceCursorMessage | PresenceTypingMessage | PingMessage;
 
 // ─── Server → Client ──────────────────────────────────────────────────────────
 
@@ -128,11 +143,38 @@ export type ErrorCode =
   | 'SLOW_CONSUMER'
   | 'SERVER_ERROR';
 
+export interface PresenceCursorBroadcast {
+  readonly type: 'PRESENCE_CURSOR_UPDATE';
+  readonly sessionId: string;
+  readonly cursor: any; // CursorPosition
+}
+
+export interface PresenceTypingBroadcast {
+  readonly type: 'PRESENCE_TYPING_UPDATE';
+  readonly sessionId: string;
+  readonly isTyping: boolean;
+}
+
+export interface ActivityBroadcast {
+  readonly type: 'ACTIVITY_EVENT';
+  readonly eventType: string;
+  readonly payload: any;
+}
+
+export interface NotificationBroadcast {
+  readonly type: 'NOTIFICATION_CREATED';
+  readonly notification: any;
+}
+
 export type ServerMessage =
   | JoinAckMessage
   | OpAckMessage
   | BroadcastMessage
   | PresenceBroadcast
+  | PresenceCursorBroadcast
+  | PresenceTypingBroadcast
+  | ActivityBroadcast
+  | NotificationBroadcast
   | UserLeftMessage
   | PongMessage
   | ErrorMessage;

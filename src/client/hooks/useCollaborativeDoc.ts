@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
+import { UID } from '../../shared/types/operation';
 import { ClientRGADocument } from '../crdt/client-rga';
 import { OfflineQueue } from '../crdt/offline-queue';
 import type {
@@ -44,6 +45,7 @@ export interface UseCollaborativeDocResult {
   localDelete: (index: number) => void;
   localBatchEdit: (before: string, after: string) => void;
   sendCursor: (afterIndex: number | null) => void;
+  uidToIndex: (uid: UID) => number | null;
 }
 
 export function useCollaborativeDoc(
@@ -272,6 +274,10 @@ export function useCollaborativeDoc(
     });
   }, [docId, send, sessionId]);
 
+  const uidToIndex = useCallback((uid: UID) => {
+    return docRef.current?.uidToIndex(uid) ?? null;
+  }, []);
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -282,5 +288,5 @@ export function useCollaborativeDoc(
     };
   }, [connect]);
 
-  return { text, status, presence, sessionId, localInsert, localDelete, localBatchEdit, sendCursor };
+  return { text, status, presence, sessionId, localInsert, localDelete, localBatchEdit, sendCursor, uidToIndex };
 }

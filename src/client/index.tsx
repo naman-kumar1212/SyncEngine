@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { Editor } from './components/Editor';
+import { Dashboard } from './components/Dashboard';
 
 function parseJwt(token: string) {
   try {
@@ -33,19 +34,7 @@ function App() {
   const [color, setColor] = useState('#00f5ff');
   const [authError, setAuthError] = useState('');
 
-  // Dashboard State
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [loadingDocs, setLoadingDocs] = useState(false);
-  const [newTitle, setNewTitle] = useState('');
-
   const user = token ? parseJwt(token) : null;
-
-  // Load document list when token is present and no currentDocId is set
-  useEffect(() => {
-    if (token && !currentDocId) {
-      loadDocuments();
-    }
-  }, [token, currentDocId]);
 
   // Load specific document details if currentDocId is set
   useEffect(() => {
@@ -67,25 +56,6 @@ function App() {
         });
     }
   }, [token, currentDocId]);
-
-  const loadDocuments = async () => {
-    setLoadingDocs(true);
-    try {
-      const res = await fetch('/api/docs', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.status === 401) {
-        handleLogout();
-        return;
-      }
-      const data = await res.json();
-      setDocuments(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingDocs(false);
-    }
-  };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -117,28 +87,6 @@ function App() {
       }
     } catch (err: any) {
       setAuthError(err.message);
-    }
-  };
-
-  const handleCreateDocument = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTitle.trim()) return;
-    try {
-      const res = await fetch('/api/docs', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ title: newTitle }),
-      });
-      if (res.ok) {
-        const doc = await res.json();
-        setNewTitle('');
-        selectDocument(doc.id);
-      }
-    } catch (err) {
-      console.error(err);
     }
   };
 
@@ -282,73 +230,12 @@ function App() {
 
   // ── 3. RENDER DASHBOARD ──────────────────────────────────────────────────
   return (
-    <div style={{ backgroundColor: 'var(--bg-darker)', minHeight: '100vh' }}>
-      <div className="dashboard-container">
-        <div className="dashboard-header">
-          <div>
-            <h1 className="gradient-text" style={{ fontSize: 32, fontWeight: 800, letterSpacing: -1 }}>SyncEngine</h1>
-            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>Real-Time Collaborative Document Manager</p>
-          </div>
-          <div className="user-tag">
-            <span className="avatar-dot" style={{ color: user?.color || '#00f5ff' }} />
-            <span>{user?.displayName || 'User'}</span>
-            <button onClick={handleLogout} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 12, fontWeight: 600, marginLeft: 8 }}>
-              Logout
-            </button>
-          </div>
-        </div>
-
-        <div className="glass-panel" style={{ padding: 24, marginBottom: 32 }}>
-          <h2 style={{ fontSize: 14, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            Create New Document
-          </h2>
-          <form onSubmit={handleCreateDocument} style={{ display: 'flex', gap: 12 }}>
-            <input
-              type="text"
-              required
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              className="form-input"
-              placeholder="e.g. Collaborative Design System spec..."
-              style={{ flex: 1 }}
-            />
-            <button type="submit" className="glow-btn">
-              + New Document
-            </button>
-          </form>
-        </div>
-
-        <h2 style={{ fontSize: 14, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-secondary)', marginBottom: 16 }}>
-          My Collaborative Documents
-        </h2>
-
-        {loadingDocs ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 14, textAlign: 'center', padding: 40 }}>Loading documents...</p>
-        ) : documents.length === 0 ? (
-          <div className="empty-state">
-            <h3 className="empty-title">No documents yet</h3>
-            <p className="empty-text">Create your first collaborative document and invite others to co-edit!</p>
-          </div>
-        ) : (
-          <div className="doc-grid">
-            {documents.map((doc) => (
-              <div key={doc.id} className="doc-card" onClick={() => selectDocument(doc.id)}>
-                <div>
-                  <h3 className="doc-title">{doc.title}</h3>
-                  <div className="doc-meta">
-                    <span>Created: {new Date(doc.createdAt).toLocaleDateString()}</span>
-                  </div>
-                </div>
-                <div className="doc-footer">
-                  <span className="doc-badge">Role: {doc.role}</span>
-                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Open →</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+    <Dashboard
+      token={token}
+      user={user}
+      onLogout={handleLogout}
+      onSelectDocument={selectDocument}
+    />
   );
 }
 

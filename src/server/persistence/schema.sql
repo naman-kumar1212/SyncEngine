@@ -40,6 +40,61 @@ CREATE TABLE IF NOT EXISTS document_permissions (
 
 CREATE INDEX IF NOT EXISTS idx_perms_user ON document_permissions(user_id);
 
+-- ─── User Documents Meta (Starred/Archived) ───────────────────────────────────
+CREATE TABLE IF NOT EXISTS user_documents_meta (
+  doc_id      UUID        NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  is_starred  BOOLEAN     NOT NULL DEFAULT false,
+  is_archived BOOLEAN     NOT NULL DEFAULT false,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (doc_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_meta_user ON user_documents_meta(user_id);
+
+-- ─── Invitations ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS invitations (
+  id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  doc_id        UUID        NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  inviter_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  invitee_email TEXT        NOT NULL,
+  role          TEXT        NOT NULL CHECK (role IN ('owner', 'editor', 'commenter', 'viewer')),
+  token         TEXT        NOT NULL UNIQUE,
+  status        TEXT        NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected')),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(invitee_email);
+CREATE INDEX IF NOT EXISTS idx_invitations_doc ON invitations(doc_id);
+CREATE INDEX IF NOT EXISTS idx_invitations_token ON invitations(token);
+
+-- ─── Document Links ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS document_links (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  doc_id      UUID        NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  token       TEXT        NOT NULL UNIQUE,
+  role        TEXT        NOT NULL CHECK (role IN ('owner', 'editor', 'commenter', 'viewer')),
+  expires_at  TIMESTAMPTZ,
+  is_active   BOOLEAN     NOT NULL DEFAULT true,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_links_doc ON document_links(doc_id);
+CREATE INDEX IF NOT EXISTS idx_links_token ON document_links(token);
+
+-- ─── Notifications ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS notifications (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type        TEXT        NOT NULL,
+  message     TEXT        NOT NULL,
+  read_at     TIMESTAMPTZ,
+  metadata    JSONB       NOT NULL DEFAULT '{}',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 -- ─── Refresh Tokens ───────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

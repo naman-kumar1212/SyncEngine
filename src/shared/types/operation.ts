@@ -46,7 +46,7 @@ export const ROOT_UID: UID = Object.freeze({ clock: 0, siteId: '__root__' });
 
 // ─── Operations ───────────────────────────────────────────────────────────────
 
-export type OperationType = 'INSERT' | 'DELETE';
+export type OperationType = 'INSERT' | 'DELETE' | 'FORMAT';
 
 /**
  * An RGA insert operation.
@@ -59,7 +59,7 @@ export interface InsertOperation {
   readonly type: 'INSERT';
   readonly uid: UID;         // Globally unique ID for this new character node
   readonly after: UID | null; // Insert after this node; null = beginning of document
-  readonly value: string;    // Single character (or atomic rich-text unit)
+  readonly value: any;       // Single character string OR Slate node object (ElementNode/TextNode)
 }
 
 /**
@@ -72,7 +72,17 @@ export interface DeleteOperation {
   readonly uid: UID;         // UID of the node to tombstone
 }
 
-export type RGAOperation = InsertOperation | DeleteOperation;
+/**
+ * An RGA format operation.
+ * Applies rich-text attributes to an existing node.
+ */
+export interface FormatOperation {
+  readonly type: 'FORMAT';
+  readonly uid: UID;
+  readonly attributes: Record<string, any>;
+}
+
+export type RGAOperation = InsertOperation | DeleteOperation | FormatOperation;
 
 // ─── Operation Envelope ───────────────────────────────────────────────────────
 

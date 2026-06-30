@@ -38,6 +38,7 @@
 import type {
   InsertOperation,
   DeleteOperation,
+  FormatOperation,
   RGAOperation,
 } from '../shared/types/operation';
 import { uidKey, compareUID, ROOT_UID } from '../shared/types/operation';
@@ -45,7 +46,8 @@ import type { SerializedRGANode } from '../shared/types/document';
 
 export interface RGANode {
   readonly uid: { clock: number; siteId: string };
-  readonly value: string;
+  readonly value: any;
+  attributes?: Record<string, any>;
   tombstoned: boolean;  // mutable only via applyDelete
   prev: RGANode | null;
   next: RGANode | null;
@@ -64,7 +66,8 @@ export class RGADocument {
   constructor() {
     this.root = {
       uid: { ...ROOT_UID },
-      value: '',
+      value: null,
+      attributes: {},
       tombstoned: false,
       prev: null,
       next: null,
@@ -120,6 +123,7 @@ export class RGADocument {
     const newNode: RGANode = {
       uid: { ...op.uid },
       value: op.value,
+      attributes: {},
       tombstoned: false,
       prev: insertionPoint,
       next: insertionPoint.next,
@@ -154,6 +158,21 @@ export class RGADocument {
     return true;
   }
 
+  // ─── FORMAT ────────────────────────────────────────────────────────────────
+  
+  /**
+   * Applies a formatting operation to a node.
+   * Modifies the node's attributes. Commutativity of formats can be tricky;
+   * we use Last-Writer-Wins (LWW) based on operation arrival, or could use Lamport clocks.
+   * For simplicity here, we apply the attributes object merge.
+   */
+  applyFormat(op: FormatOperation): boolean {
+    const node = this.index.get(uidKey(op.uid));
+    if (!node) return false;
+    node.attributes = { ...node.attributes, ...op.attributes };
+    return true;
+  }
+
   // ─── UNIFIED APPLY ─────────────────────────────────────────────────────────
 
   /**
@@ -165,9 +184,12 @@ export class RGADocument {
       if (op.type === 'INSERT') {
         this.applyInsert(op);
         return true;
-      } else {
+      } else if (op.type === 'DELETE') {
         return this.applyDelete(op);
+      } else if (op.type === 'FORMAT') {
+        return this.applyFormat(op);
       }
+      return false;
     } catch {
       return false; // causal gap — caller should buffer
     }
@@ -178,15 +200,29 @@ export class RGADocument {
   /**
    * Returns the current document text (tombstoned nodes are excluded).
    * O(n) where n is the total number of nodes (including tombstones).
+   * NOTE: For Slate schema, this returns just the concatenated raw text.
    */
   toText(): string {
     const parts: string[] = [];
     let node = this.root.next;
     while (node !== null) {
-      if (!node.tombstoned) parts.push(node.value);
+      if (!node.tombstoned && typeof node.value === 'string') parts.push(node.value);
       node = node.next;
     }
     return parts.join('');
+  }
+
+  /**
+   * Returns an array of visible nodes, useful for reconstructing the Slate document.
+   */
+  toNodes(): RGANode[] {
+    const visible: RGANode[] = [];
+    let node = this.root.next;
+    while (node !== null) {
+      if (!node.tombstoned) visible.push(node);
+      node = node.next;
+    }
+    return visible;
   }
 
   /**
@@ -262,6 +298,7 @@ export class RGADocument {
         clock: node.uid.clock,
         siteId: node.uid.siteId,
         value: node.value,
+        attributes: node.attributes,
         tombstoned: node.tombstoned,
       });
       node = node.next;
@@ -281,6 +318,7 @@ export class RGADocument {
       const node: RGANode = {
         uid: { clock: n.clock, siteId: n.siteId },
         value: n.value,
+        attributes: (n as any).attributes || {},
         tombstoned: n.tombstoned,
         prev,
         next: null,

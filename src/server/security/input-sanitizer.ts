@@ -60,7 +60,7 @@ export const OperationMessageSchema = z.object({
 
 export const JoinMessageSchema = z.object({
   type: z.literal('JOIN'),
-  docId: z.string().uuid(),
+  docId: z.string().uuid().optional(),
   token: z.string().min(1),
   lastSeq: z.number().int().nonnegative(),
   clientId: z.string().uuid(),

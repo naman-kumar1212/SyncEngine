@@ -46,11 +46,14 @@ import {
   refreshPresenceTTL,
 } from '../sync/presence-manager';
 import {
+  publishOperation,
   subscribeToDocument,
   unsubscribeFromDocument,
   onUserLeft,
   publishPresence,
   publishUserLeft,
+  subscribeToUser,
+  unsubscribeFromUser,
 } from '../fanout/redis-pubsub';
 import { query } from '../persistence/db';
 import { config } from '../config';
@@ -130,21 +133,59 @@ export function createWebSocketServer(httpServer: Server): WebSocketServer {
       const msg = result.data;
       session.lastActivity = Date.now();
 
-      switch (msg.type) {
-        case 'OPERATION':
-          await handleClientOperation(session, msg);
+      // Priority Queuing: Push to session's message queue and process
+      if (!session.messageQueue) {
+        session.messageQueue = [];
+        session.isProcessing = false;
+      }
+
+      // Determine priority: 0 is highest (operations), 1 is lower (presence, pings)
+      const priority = msg.type === 'OPERATION' ? 0 : 1;
+
+      // Insert into queue maintaining priority order
+      const queue = session.messageQueue as Array<{ priority: number, msg: any }>;
+      let inserted = false;
+      for (let i = 0; i < queue.length; i++) {
+        if (priority < queue[i].priority) {
+          queue.splice(i, 0, { priority, msg });
+          inserted = true;
           break;
-        case 'PRESENCE':
-          await handleClientPresence(session, msg);
-          break;
-        case 'PING':
-          sendToSession(session, {
-            type: 'PONG',
-            timestamp: msg.timestamp,
-            serverTime: Date.now(),
-          } satisfies PongMessage);
-          session.isAlive = true;
-          break;
+        }
+      }
+      if (!inserted) {
+        queue.push({ priority, msg });
+      }
+
+      // Process queue if not already processing
+      if (!session.isProcessing) {
+        session.isProcessing = true;
+        // Run in background without awaiting to free the event loop
+        (async () => {
+          while (queue.length > 0) {
+            const { msg: nextMsg } = queue.shift()!;
+            try {
+              switch (nextMsg.type) {
+                case 'OPERATION':
+                  await handleClientOperation(session, nextMsg);
+                  break;
+                case 'PRESENCE':
+                  await handleClientPresence(session, nextMsg);
+                  break;
+                case 'PING':
+                  sendToSession(session, {
+                    type: 'PONG',
+                    timestamp: nextMsg.timestamp,
+                    serverTime: Date.now(),
+                  } satisfies PongMessage);
+                  session.isAlive = true;
+                  break;
+              }
+            } catch (err) {
+              logger.error({ err }, 'Error processing queued message');
+            }
+          }
+          session.isProcessing = false;
+        })();
       }
     });
 
@@ -198,44 +239,63 @@ async function handleJoin(socket: WebSocket, raw: unknown): Promise<void> {
   }
 
   // ── Permission check ──
-  const perms = await query<{ role: string; display_name: string; color: string }>(
-    `SELECT dp.role, u.display_name, u.color
-       FROM document_permissions dp
-       JOIN users u ON u.id = dp.user_id
-      WHERE dp.doc_id = $1 AND dp.user_id = $2`,
-    [msg.docId, payload.sub],
-  );
+  let display_name = '';
+  let color = '';
 
-  if (perms.length === 0) {
-    sendError(socket, 'PERMISSION_DENIED', 'No access to this document');
-    socket.close(4003, 'Permission denied');
-    return;
+  if (msg.docId) {
+    const perms = await query<{ role: string; display_name: string; color: string }>(
+      `SELECT dp.role, u.display_name, u.color
+         FROM document_permissions dp
+         JOIN users u ON u.id = dp.user_id
+        WHERE dp.doc_id = $1 AND dp.user_id = $2`,
+      [msg.docId, payload.sub],
+    );
+
+    if (perms.length === 0) {
+      sendError(socket, 'PERMISSION_DENIED', 'No access to this document');
+      socket.close(4003, 'Permission denied');
+      return;
+    }
+    display_name = perms[0].display_name;
+    color = perms[0].color;
+  } else {
+    const users = await query<{ display_name: string; color: string }>(
+      `SELECT display_name, color FROM users WHERE id = $1`,
+      [payload.sub]
+    );
+    if (users.length === 0) {
+      sendError(socket, 'AUTH_FAILED', 'User not found');
+      socket.close(4001, 'Auth failed');
+      return;
+    }
+    display_name = users[0].display_name;
+    color = users[0].color;
   }
 
-  const { role, display_name, color } = perms[0];
-
   // ── Load document ──
-  let cached;
-  try {
-    cached = await getOrLoadDocument(msg.docId);
-  } catch (err) {
-    sendError(socket, 'DOCUMENT_NOT_FOUND', 'Document not found');
-    socket.close(4004, 'Document not found');
-    return;
+  let cached = { lastSeq: 0, doc: { serialize: () => [] } };
+  if (msg.docId) {
+    try {
+      cached = await getOrLoadDocument(msg.docId) as any;
+    } catch (err) {
+      sendError(socket, 'DOCUMENT_NOT_FOUND', 'Document not found');
+      socket.close(4004, 'Document not found');
+      return;
+    }
   }
 
   // ── Compute missed ops for reconnect ──
   let missedOps: OperationEnvelope[] = [];
   let forceFullLoad = false;
 
-  if (msg.lastSeq > 0) {
+  if (msg.docId && msg.lastSeq > 0) {
     missedOps = await getMissedOperations(msg.docId, msg.lastSeq);
     forceFullLoad = shouldForceFullReload(missedOps);
     if (forceFullLoad) missedOps = []; // client will use snapshot
   }
 
   // ── Assign siteId ──
-  const siteId = msg.clientId; // Client's persistent UUID is used as siteId
+  const siteId = msg.clientId || 'global-client'; // Client's persistent UUID is used as siteId
 
   // ── Register session ──
   const session = registerSession(socket, {
@@ -250,21 +310,32 @@ async function handleJoin(socket: WebSocket, raw: unknown): Promise<void> {
   socketToSession.set(socket, session.id);
 
   // ── Presence ──
-  const presence = buildInitialPresence({
-    sessionId: session.id,
-    userId: session.userId,
-    displayName: session.displayName,
-    color: session.color,
-  });
-  await updatePresence(msg.docId, presence);
-  const allPresence = await getAllPresence(msg.docId);
+  let allPresence: UserPresence[] = [];
+  if (msg.docId) {
+    const presence = buildInitialPresence({
+      sessionId: session.id,
+      userId: session.userId,
+      displayName: session.displayName,
+      color: session.color,
+    });
+    await updatePresence(msg.docId, presence);
+    allPresence = await getAllPresence(msg.docId);
 
-  // ── Subscribe this document on this worker ──
-  subscribeToDocument(
-    msg.docId,
-    (envelope) => handleRedisOperation(msg.docId, envelope),
-    (p) => handleRedisPresence(msg.docId, p),
-  );
+    // ── Subscribe this document on this worker ──
+    subscribeToDocument(
+      msg.docId,
+      (envelope) => handleRedisOperation(msg.docId!, envelope),
+      (p) => handleRedisPresence(msg.docId!, p),
+    );
+  }
+
+  // ── Subscribe this user on this worker for notifications ──
+  subscribeToUser(session.userId, (notification) => {
+    sendToSession(session, {
+      type: 'NOTIFICATION_CREATED',
+      notification,
+    });
+  });
 
   // ── Send JOIN_ACK ──
   const ack: JoinAckMessage = {
@@ -273,7 +344,7 @@ async function handleJoin(socket: WebSocket, raw: unknown): Promise<void> {
     siteId,
     snapshot: {
       seq: cached.lastSeq,
-      nodes: forceFullLoad || msg.lastSeq === 0 ? cached.doc.serialize() : [],
+      nodes: (msg.docId && (forceFullLoad || msg.lastSeq === 0)) ? cached.doc.serialize() : [],
     },
     missedOps: forceFullLoad ? [] : missedOps,
     presence: allPresence,
@@ -286,7 +357,7 @@ async function handleJoin(socket: WebSocket, raw: unknown): Promise<void> {
     `INSERT INTO sessions (id, user_id, doc_id, site_id, last_seq) VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (id) DO UPDATE SET last_seq = $5`,
     [session.id, session.userId, msg.docId, siteId, cached.lastSeq],
-  ).catch(() => {}); // non-critical
+  ).catch(() => { }); // non-critical
 
   logger.info(
     { sessionId: session.id, docId: msg.docId, lastSeq: msg.lastSeq, missedOps: missedOps.length },
@@ -332,6 +403,8 @@ async function handleClientOperation(
 
 // ─── PRESENCE Handler ─────────────────────────────────────────────────────────
 
+const typingTimers = new Map<string, NodeJS.Timeout>();
+
 async function handleClientPresence(
   session: ClientSession,
   msg: ReturnType<typeof PresenceMessageSchema.parse>,
@@ -349,6 +422,32 @@ async function handleClientPresence(
   await updatePresence(msg.docId, presence);
   // Publish to Redis so other workers can fan out to their locally connected clients
   await publishPresence(msg.docId, presence);
+
+  // Auto-stop typing indicator after 3 seconds of inactivity
+  const timerKey = `${msg.docId}:${session.id}`;
+  if (msg.update.isTyping) {
+    if (typingTimers.has(timerKey)) clearTimeout(typingTimers.get(timerKey));
+    typingTimers.set(
+      timerKey,
+      setTimeout(async () => {
+        typingTimers.delete(timerKey);
+        // Ensure session is still active
+        if (!getSessionById(session.id)) return;
+        const updatedPresence = {
+          ...presence,
+          isTyping: false,
+          lastSeen: new Date().toISOString(),
+        };
+        await updatePresence(msg.docId, updatedPresence).catch(() => { });
+        await publishPresence(msg.docId, updatedPresence).catch(() => { });
+      }, 3000),
+    );
+  } else {
+    if (typingTimers.has(timerKey)) {
+      clearTimeout(typingTimers.get(timerKey));
+      typingTimers.delete(timerKey);
+    }
+  }
 }
 
 // ─── Redis Fan-out Handlers ────────────────────────────────────────────────────
@@ -358,33 +457,69 @@ function handleRedisOperation(docId: string, envelope: OperationEnvelope): void 
   broadcastToDocument(docId, broadcast);
 }
 
+const presenceBatches = new Map<string, Map<string, UserPresence>>();
+const presenceTimers = new Map<string, NodeJS.Timeout>();
+
 function handleRedisPresence(docId: string, presence: UserPresence): void {
-  const broadcast: PresenceBroadcast = { type: 'PRESENCE_UPDATE', presence };
-  broadcastToDocument(docId, broadcast);
+  if (!presenceBatches.has(docId)) {
+    presenceBatches.set(docId, new Map());
+  }
+  const batch = presenceBatches.get(docId)!;
+  // Overwrite older presence for the same session
+  batch.set(presence.sessionId, presence);
+
+  if (!presenceTimers.has(docId)) {
+    const timer = setTimeout(() => {
+      const currentBatch = presenceBatches.get(docId);
+      presenceBatches.delete(docId);
+      presenceTimers.delete(docId);
+
+      if (currentBatch && currentBatch.size > 0) {
+        // Send a separate message for each updated presence, or extend protocol for batching.
+        // For now, iterate and send. The WebSocket message queue handles network pacing.
+        for (const p of currentBatch.values()) {
+          const broadcast: PresenceBroadcast = { type: 'PRESENCE_UPDATE', presence: p };
+          broadcastToDocument(docId, broadcast);
+        }
+      }
+    }, 50); // 50ms debounce
+    presenceTimers.set(docId, timer);
+  }
 }
 
 // ─── Disconnect Handler ────────────────────────────────────────────────────────
 
 async function handleDisconnect(session: ClientSession): Promise<void> {
   removeSession(session.id);
-  await removePresence(session.docId, session.id, session.userId);
+
+  if (session.docId) {
+    await removePresence(session.docId, session.id, session.userId);
+
+    // Broadcast USER_LEFT locally AND publish to Redis for cross-worker fan-out
+    broadcastToDocument(session.docId, {
+      type: 'USER_LEFT',
+      sessionId: session.id,
+      userId: session.userId,
+    } satisfies UserLeftMessage);
+    await Promise.resolve(
+      publishUserLeft(session.docId, session.id, session.userId),
+    ).catch((err) =>
+      logger.warn({ err, sessionId: session.id }, 'Failed to publish USER_LEFT to Redis'),
+    );
+
+    unsubscribeFromDocument(
+      session.docId,
+      (envelope) => handleRedisOperation(session.docId!, envelope),
+      (p) => handleRedisPresence(session.docId!, p),
+    );
+  }
+
+  unsubscribeFromUser(session.userId, () => { });
 
   await query(
     `UPDATE sessions SET disconnected_at = now() WHERE id = $1`,
     [session.id],
-  ).catch(() => {});
-
-  // Broadcast USER_LEFT locally AND publish to Redis for cross-worker fan-out
-  broadcastToDocument(session.docId, {
-    type: 'USER_LEFT',
-    sessionId: session.id,
-    userId: session.userId,
-  } satisfies UserLeftMessage);
-  await Promise.resolve(
-    publishUserLeft(session.docId, session.id, session.userId),
-  ).catch((err) =>
-    logger.warn({ err, sessionId: session.id }, 'Failed to publish USER_LEFT to Redis'),
-  );
+  ).catch(() => { });
 }
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────
@@ -428,5 +563,7 @@ function getSession(socket: WebSocket): ClientSession | undefined {
 declare module './session-manager' {
   interface ClientSession {
     role?: string;
+    messageQueue?: Array<{ priority: number, msg: any }>;
+    isProcessing?: boolean;
   }
 }

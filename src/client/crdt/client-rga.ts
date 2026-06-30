@@ -137,6 +137,20 @@ export class ClientRGADocument {
     return null;
   }
 
+  uidToIndex(uid: UID): number | null {
+    let idx = 0;
+    let node = this.root.next;
+    const key = uidKey(uid);
+    while (node) {
+      if (!node.tombstoned) {
+        idx++;
+        if (uidKey(node.uid) === key) return idx;
+      }
+      node = node.next;
+    }
+    return null;
+  }
+
   getAfterUID(index: number): UID | null {
     if (index === 0) return null;
     return this.indexToUID(index);

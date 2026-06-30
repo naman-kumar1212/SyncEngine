@@ -115,3 +115,35 @@ export async function softDeleteDocument(docId: string, userId: string): Promise
     );
   });
 }
+
+export interface Collaborator {
+  user_id: string;
+  role: DocumentPermission;
+  email?: string;
+  display_name?: string;
+}
+
+export async function getCollaborators(docId: string): Promise<Collaborator[]> {
+  const rows = await query<Collaborator>(
+    `SELECT dp.user_id, dp.role, u.email, u.display_name
+     FROM document_permissions dp
+     JOIN users u ON u.id = dp.user_id
+     WHERE dp.doc_id = $1`,
+    [docId]
+  );
+  return rows;
+}
+
+export async function updateCollaboratorRole(docId: string, userId: string, role: DocumentPermission): Promise<void> {
+  await query(
+    `UPDATE document_permissions SET role = $3 WHERE doc_id = $1 AND user_id = $2`,
+    [docId, userId, role]
+  );
+}
+
+export async function removeCollaborator(docId: string, userId: string): Promise<void> {
+  await query(
+    `DELETE FROM document_permissions WHERE doc_id = $1 AND user_id = $2`,
+    [docId, userId]
+  );
+}

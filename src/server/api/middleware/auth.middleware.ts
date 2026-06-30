@@ -3,9 +3,16 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
+import type * as core from 'express-serve-static-core';
 import { verifyAccessToken } from '../../security/jwt';
 
-export interface AuthenticatedRequest extends Request {
+export interface AuthenticatedRequest<
+  P = core.ParamsDictionary,
+  ResBody = any,
+  ReqBody = any,
+  ReqQuery = core.Query,
+  Locals extends Record<string, any> = Record<string, any>
+> extends Request<P, ResBody, ReqBody, ReqQuery, Locals> {
   userId: string;
   userEmail: string;
   displayName: string;

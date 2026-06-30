@@ -49,7 +49,8 @@ export interface SnapshotRecord {
 export interface SerializedRGANode {
   readonly clock: number;
   readonly siteId: string;
-  readonly value: string;
+  readonly value: any;
+  readonly attributes?: Record<string, any>;
   readonly tombstoned: boolean;
 }
 

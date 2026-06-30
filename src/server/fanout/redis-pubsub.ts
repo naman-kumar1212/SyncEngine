@@ -22,10 +22,12 @@ import { logger } from '../logger';
 type OperationHandler = (envelope: OperationEnvelope) => void;
 type PresenceHandler = (presence: UserPresence) => void;
 type UserLeftHandler = (data: { sessionId: string; userId: string; docId: string }) => void;
+type UserNotificationHandler = (notification: any) => void;
 
 const opHandlers: Map<string, Set<OperationHandler>> = new Map();
 const presenceHandlers: Map<string, Set<PresenceHandler>> = new Map();
 const userLeftHandlers: Set<UserLeftHandler> = new Set();
+const userNotificationHandlers: Map<string, Set<UserNotificationHandler>> = new Map();
 
 let subscribed = false;
 
@@ -57,6 +59,17 @@ export async function publishUserLeft(
   await getPublisher().publish(
     channel,
     JSON.stringify({ type: 'user_left', sessionId, userId, docId }),
+  );
+}
+
+/**
+ * Publishes a real-time notification to a specific user.
+ */
+export async function publishUserNotification(userId: string, notification: any): Promise<void> {
+  const channel = `user:${userId}:notifications`;
+  await getPublisher().publish(
+    channel,
+    JSON.stringify({ type: 'notification', data: notification }),
   );
 }
 
@@ -117,6 +130,28 @@ export function onUserLeft(handler: UserLeftHandler): () => void {
   return () => userLeftHandlers.delete(handler);
 }
 
+export function subscribeToUser(userId: string, onNotification: UserNotificationHandler): void {
+  const channel = `user:${userId}:notifications`;
+  if (!userNotificationHandlers.has(userId)) userNotificationHandlers.set(userId, new Set());
+  userNotificationHandlers.get(userId)!.add(onNotification);
+  
+  const subscriber = getSubscriber();
+  subscriber.subscribe(channel, (err) => {
+    if (err) logger.error({ err, userId }, 'Redis subscribe to user channel error');
+  });
+
+  ensureMessageRouter();
+}
+
+export function unsubscribeFromUser(userId: string, onNotification: UserNotificationHandler): void {
+  userNotificationHandlers.get(userId)?.delete(onNotification);
+  
+  if ((userNotificationHandlers.get(userId)?.size ?? 0) === 0) {
+    userNotificationHandlers.delete(userId);
+    getSubscriber().unsubscribe(`user:${userId}:notifications`);
+  }
+}
+
 /** Routes Redis messages to the correct document handler. */
 function ensureMessageRouter(): void {
   if (subscribed) return;
@@ -139,6 +174,11 @@ function ensureMessageRouter(): void {
           presenceHandlers.get(docId)?.forEach((h) => h(data.presence));
         } else if (data.type === 'user_left') {
           userLeftHandlers.forEach((h) => h(data));
+        }
+      } else if (channel.endsWith(':notifications')) {
+        const userId = channel.split(':')[1];
+        if (data.type === 'notification') {
+          userNotificationHandlers.get(userId)?.forEach((h) => h(data.data));
         }
       }
     } catch (err) {

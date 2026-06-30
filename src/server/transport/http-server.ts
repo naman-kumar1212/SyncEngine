@@ -16,6 +16,9 @@ import authRouter from '../api/routes/auth';
 import documentsRouter from '../api/routes/documents';
 import historyRouter from '../api/routes/history';
 import restoreRouter from '../api/routes/restore';
+import invitesRouter from '../api/routes/invites';
+import notificationsRouter from '../api/routes/notifications';
+import dashboardRouter from '../api/routes/dashboard';
 import { logger } from '../logger';
 import { config } from '../config';
 
@@ -61,6 +64,9 @@ export function createHttpServer() {
   app.use('/api/docs', documentsRouter);
   app.use('/api/docs/:id/history', historyRouter);
   app.use('/api/docs/:id/restore', restoreRouter);
+  app.use('/api/invites', invitesRouter);
+  app.use('/api/notifications', notificationsRouter);
+  app.use('/api/dashboard', dashboardRouter);
 
   // ── 404 + Error handlers ─────────────────────────────────────────────────
   app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
